@@ -43,8 +43,9 @@ Create `output/selections/ie_inputs.json` using one of two styles:
 ## What the Output Shows
 
 `output/initial-expected/initial-expected.xlsx` contains:
-- **Loss sheet**: For Incurred and Paid, shows CL ultimates for context alongside the IE ultimate
-- **Counts sheet**: For Reported and Closed, shows CL ultimates alongside IE ultimate
-- Both sheets show IBNR = IE Ultimate − Actual and Unpaid = IE Ultimate − Paid diagonal
+- **Loss sheet**: Accident Period, Current Age, Exposure, Selected Loss Rate, Selected Loss (IE ultimate for incurred loss)
+- **Counts sheet**: Accident Period, Current Age, Exposure, Selected Frequency, Selected Counts (IE ultimate for reported count)
+
+`ie_ultimates.csv` retains full internal detail for downstream BF (all measures per period).
 
 No trend factor calculations are required at this stage.

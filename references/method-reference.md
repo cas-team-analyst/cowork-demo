@@ -2,109 +2,106 @@
 
 ## Key Concepts
 
-### Triangle Structure
-A loss development triangle has:
-- **Rows** = accident periods (years, quarters, etc.)
-- **Columns** = development ages (months since start of period)
-- **Upper-left triangle** = observed data
-- **Lower-right triangle** = future development to be projected
+### Loss Development Triangle
+A matrix showing cumulative loss amounts (or claim counts) by accident period (rows)
+and development age (columns). Older accident periods have more columns filled in because
+more time has elapsed. The upper-right portion is empty — those are the values we're
+trying to estimate.
 
 ### Age-to-Age Factor (ATA / LDF)
-The ratio of cumulative losses at age N+1 to cumulative losses at age N, for a given accident period.
-`LDF(12→24, AY2020) = Value(AY2020, 24) / Value(AY2020, 12)`
+The ratio of a value at one development age to the value at the prior age:
+```
+LDF(12→24) = Value@24 / Value@12
+```
+An LDF > 1 means claims grew between those ages. These ratios form a "development pattern"
+that we can apply to immature accident periods.
 
 ### Cumulative Development Factor (CDF)
-The product of all selected ATAs from a given age to ultimate (including the tail).
-`CDF(12) = LDF(12→24) × LDF(24→36) × ... × LDF(108→120) × Tail`
+The product of all remaining LDFs from a given age to ultimate:
+```
+CDF@age = LDF(age→next) × LDF(next→next2) × ... × tail
+```
+CDF represents the total remaining development. CDF = 1.0 means fully developed.
 
-### Percent Developed
-The fraction of the ultimate that has already emerged at a given age.
-`% Developed = 1 / CDF`
+### % Developed
+```
+% developed = 1 / CDF
+```
+How far along an accident period is toward its ultimate value. Used in BF method
+as the credibility weight.
 
 ### Tail Factor
-The CDF from the oldest observed age to true ultimate. Should be ≥ 1.000.
-A tail of 1.000 means all development is assumed complete at the oldest age.
+Development beyond the last observed age. Usually close to 1.000 for mature triangles.
 
 ---
 
-## Chain Ladder Method
+## Methods
 
-**Concept:** Project each accident period's losses forward from its current age to ultimate by multiplying the actual losses by the CDF at the current age.
+### Chain Ladder (CL)
+**Idea:** Project ultimates by applying selected LDFs to the latest observed values.
 
 ```
-CL Ultimate = Actual × CDF(current age)
-CL IBNR     = CL Ultimate − Actual
+Ultimate = Latest Actual × CDF
+IBNR     = Ultimate - Latest Actual
 ```
 
-**Agent's job:** Select one LDF for each development interval (and the tail) from among the computed averages, based on stability, trend, and credibility.
+**Strengths:** Relies entirely on the data's own development pattern. Good for stable,
+mature lines of business.
 
-**Selection guidance:**
-- **Low CV, flat slope** → use weighted all-year average (most credible)
-- **Upward trend** → prefer recent-year weighted average (3yr or 5yr)
-- **Downward trend** → consider all-year or medial (exclude-high-low) average
-- **Sparse data (2–3 points)** → use simple average; note low credibility
-- **Tail** → must be ≥ 1.000; set to 1.000 only if the oldest AY is fully developed
+**Weaknesses:** High leverage for immature periods — a single early observation gets
+multiplied by a large CDF. Sensitive to anomalies in recent data.
+
+### Initial Expected (IE)
+**Idea:** Estimate ultimate losses using prior expectations, independent of the
+triangle's own development.
+
+```
+IE Ultimate (Losses) = ELR × Exposure
+IE Ultimate (Counts) = Expected Frequency × Exposure
+```
+
+Where ELR and Expected Frequency come from pricing, industry data, or judgment.
+
+**Strengths:** Not affected by random fluctuations in early development.
+Provides an independent benchmark.
+
+**Weaknesses:** Only as good as the ELR assumption. Doesn't respond to actual experience.
+
+### Bornhuetter-Ferguson (BF)
+**Idea:** Blend CL and IE using % developed as the credibility weight.
+
+```
+BF Ultimate = Actual + (1 - % developed) × IE Ultimate
+```
+
+- For mature periods (high % developed), BF ≈ CL
+- For immature periods (low % developed), BF ≈ IE
+
+**Strengths:** Balances responsiveness to data with stability from prior expectations.
+The most commonly used method for immature accident years.
+
+**Weaknesses:** Still depends on the IE assumption for immature years.
 
 ---
 
-## Initial Expected Method
+## Method Comparison
 
-**Concept:** The reserve estimate equals a pre-determined expected ultimate loss (or ELR × premium) minus what has already been paid/incurred.
-
-```
-IE Ultimate = Expected Ultimate (provided externally)
-IE IBNR     = IE Ultimate − Actual
-```
-
-**No agent selection required.** The inputs are provided by the user.
-
-**When it's useful:** Early accident periods where actual data is too sparse to be credible; as the "prior" in BF.
+| Aspect | CL | IE | BF |
+|--------|----|----|-----|
+| Data reliance | 100% actual | 0% actual | Blended |
+| Prior expectation | None | Full | Partial |
+| Immature years | High leverage | Stable | Balanced |
+| Mature years | Reliable | May over/under-state | ≈ CL |
+| Common use | Primary for mature | Benchmark/floor | Primary for immature |
 
 ---
 
-## Bornhuetter-Ferguson Method
+## Selection Guidance
 
-**Concept:** BF blends the chain-ladder and initial-expected methods. The credibility weight given to actual data equals the % developed (how much of the ultimate has emerged), and the weight on the initial expected is 1 minus that.
+The agent should consider these factors when selecting final ultimates:
 
-```
-BF Ultimate = (% Developed × Actual) + ((1 − % Developed) × Expected Ultimate)
-            = Actual + (1 − % Developed) × Expected Ultimate
-
-BF IBNR     = (1 − % Developed) × Expected Ultimate
-```
-
-For a fully developed period (% Developed = 1.0), BF = Chain Ladder.
-For a brand-new period (% Developed = 0.0), BF = Initial Expected.
-
-**No agent selection required.** BF is fully determined by the CL selections (which drive % developed) and the IE inputs.
-
----
-
-## Comparing the Three Methods
-
-| Period maturity | Chain Ladder reliability | BF blend toward |
-|-----------------|--------------------------|-----------------|
-| Very immature (12 mo) | Low — few data points | IE (high weight on a priori) |
-| Moderately mature (36–60 mo) | Medium | Mix of both |
-| Mature (72+ mo) | High | CL (actual data dominates) |
-
-A common approach is to:
-1. Use BF for immature periods (first 2–3 years of a 10-year triangle)
-2. Use Chain Ladder for more mature periods
-3. Average or select between methods for the middle range
-
----
-
-## Output File Reference
-
-| File | Contents |
-|------|----------|
-| `output/prep/triangles.csv` | Normalized long-format triangle data |
-| `output/prep/diagonal.csv` | Latest observation per period × measure |
-| `output/prep/ldf_averages.csv` | LDF averages by interval × measure |
-| `output/selections/cl_selections.json` | Agent's LDF selections |
-| `output/selections/ie_inputs.json` | User-provided initial expected inputs |
-| `output/chain-ladder/cl_ultimates.csv` | CL ultimate by period × measure |
-| `output/initial-expected/ie_ultimates.csv` | IE ultimate by period × measure |
-| `output/bornhuetter-ferguson/bf_ultimates.csv` | BF ultimate by period × measure |
-| `output/combined_ultimates.csv` | All three methods side by side |
+1. **% Developed**: Higher = more confidence in CL; lower = more weight to BF/IE
+2. **CL convergence**: If Incurred CL ≈ Paid CL, both methods agree and CL is reliable
+3. **IE reasonableness**: Does the ELR × Exposure result make sense given the data?
+4. **BF smoothness**: BF tends to produce smoother patterns across accident years
+5. **Trend consistency**: Ultimate severity, loss rate, frequency should trend sensibly

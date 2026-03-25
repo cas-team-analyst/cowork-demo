@@ -1,7 +1,7 @@
 ---
 name: actuarial-reserving
 description: >
-  Full actuarial loss reserving pipeline skill. Use this whenever someone wants
+  Full actuarial loss reserving pipeline skill. Use when user asks
   to estimate unpaid loss reserves, IBNR, or ultimate losses from a triangle
   dataset. Covers chain-ladder (CL), initial-expected (IE), and
   Bornhuetter-Ferguson (BF) methods. Supports dollar losses and claim counts.
@@ -89,11 +89,19 @@ Read `output/prep/ldf_averages.csv`. Columns:
 - `cv_3yr`, `cv_5yr` — coefficient of variation (stability measure)
 - `slope_3yr`, `slope_5yr` — trend in recent LDFs (positive = rising)
 
-**Selection Principles:**
-1. **Stability** — prefer low CV; if `cv_3yr < 0.02`, simple averages are reliable
-2. **Recent trend** — if `slope_3yr` is significantly positive/negative, weight toward recent years
-3. **Sparse data** — for the oldest intervals (few data points), use `weighted_all` or `simple_all`
-4. **Tail** — apply a tail factor for development beyond the oldest age; default = 1.000 if the oldest interval's LDF is already near 1.0
+Chain-ladder LDF selection follows an **eight-criteria** methodology (plus **tail**). Criteria are weighed **together** with judgment; full rules, numeric thresholds, prior-anchor sourcing, volume-weighting cautions, and `reasoning` guidance are in [methods/chain-ladder/METHOD.md](methods/chain-ladder/METHOD.md).
+
+**The eight criteria (summary):**  
+(1) **Outlier handling** — use `excl_hi_lo_*` when variability is high.  
+(2) **Recency preference** — favor 5-year and 3-year over all-history alone in large triangles; shorter windows when a clear trend appears.  
+(3) **Asymmetric conservatism** — slower to follow down moves, quicker to follow up moves (see METHOD for % thresholds).  
+(4) **Bayesian anchoring to prior** — anchor to prior selected LDF; blend with explicit weights when helpful.  
+(5) **Latest-point outlier exception** — if the latest factor is extreme vs the last 5–10 points (see METHOD), do not overweight it; lean on averages and prior.  
+(6) **Trending** — gradual moves toward a sustained 3–4 point direction; distinguish trend from one-off noise.  
+(7) **Sparse data** — prefer longer averages (5-year, all-history) when volume is thin (see METHOD for claim/$ heuristics).  
+(8) **Convergence override** — when 3-year, 5-year, and all-history align tightly and differ materially from prior, override the prior.
+
+Prep outputs **3-year, 5-year, and all-history** averages only (no 7-year column); use `output/prep/ldf_triangle.csv` for per-period factors when comparing the latest diagonal to history or applying criteria 5–6.
 
 Write selections to `output/selections/cl_selections.json`:
 ```json
