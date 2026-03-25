@@ -1,1 +1,4 @@
 actuarial-analysis/
+output/
+data/
+**__pycache__**
