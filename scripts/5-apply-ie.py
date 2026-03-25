@@ -1,8 +1,9 @@
 """
-Script 5: Apply the Initial Expected (IE) method.
+Script 5: Apply the Initial Expected (IE) method using ELR × Exposure.
 
-Reads CL ultimates (from script 4) plus user-provided IE inputs, then writes
-canonical Excel output showing CL context, selected IE ultimate, IBNR, and Unpaid.
+Reads Expected Loss Ratios and Expected Frequencies from the ELR file,
+multiplies by the latest Exposure diagonal to compute initial expected
+ultimates, then writes canonical Excel output.
 
 Usage (run from the project root):
     python scripts/5-apply-ie.py
@@ -10,35 +11,27 @@ Usage (run from the project root):
 Inputs:
     output/prep/diagonal.pkl
     output/chain-ladder/cl_ultimates.csv
-    output/selections/ie_inputs.json
+    data/elrs.xlsx                          (ELR file with loss ratios and frequencies)
 
-ie_inputs.json format (two supported styles):
-
-  Style A - direct ultimate by period and measure:
-    [
-      {"period": "2015", "measure": "Incurred Loss", "expected_ultimate": 45000000},
-      ...
-    ]
-
-  Style B - expected loss ratio applied to premium:
-    [
-      {"period": "2015", "measure": "Incurred Loss", "elr": 0.72, "premium": 62500000},
-      ...
-    ]
+ELR file format:
+    Sheet "ELR" with columns:
+      - Accident Period
+      - Expected Loss Ratio    (e.g., 0.75 = 75% of exposure)
+      - Expected Frequency     (e.g., 1.35 counts per exposure unit)
 
 Outputs:
     output/initial-expected/
-        initial-expected.xlsx   (canonical format: Loss sheet + Counts sheet)
+        initial-expected.xlsx   (Loss: period, age, exposure, loss rate, selected loss;
+                                 Counts: period, age, exposure, frequency, selected counts)
         ie_ultimates.csv        (internal: expected ultimates per period x measure)
     output/inputs/
-        ie_inputs.json          (copy of inputs for reference)
+        ie_inputs.json          (copy of computed IE inputs for reference)
 """
 
 import pandas as pd
 import numpy as np
 import json
 import os
-import shutil
 
 
 def _try_int(series):
@@ -49,11 +42,14 @@ def _try_int(series):
         return series.astype(str)
 
 
+# ── Configure these paths ──────────────────────────────────────────────────────
 INPUT_DIAGONAL   = "output/prep/diagonal.pkl"
 INPUT_CL_ULTS    = "output/chain-ladder/cl_ultimates.csv"
-IE_INPUTS_JSON   = "output/selections/ie_inputs.json"
+ELR_FILE         = "data/canonical-elrs.xlsx"
+ELR_SHEET        = "ELR"
 OUTPUT_DIR       = "output/initial-expected"
 OUTPUT_INPUTS    = "output/inputs"
+# ── End configuration ──────────────────────────────────────────────────────────
 
 # Unpaid = Ultimate(this measure) - diagonal(proxy measure)
 UNPAID_PROXY = {
@@ -64,20 +60,71 @@ UNPAID_PROXY = {
 }
 
 
-def load_ie_inputs(path):
-    with open(path) as f:
-        data = json.load(f)
-    rows = []
-    for item in data:
-        if "expected_ultimate" in item:
-            rows.append(dict(period=str(item["period"]), measure=str(item["measure"]),
-                             expected_ultimate=float(item["expected_ultimate"])))
-        elif "elr" in item and "premium" in item:
-            rows.append(dict(period=str(item["period"]), measure=str(item["measure"]),
-                             expected_ultimate=float(item["elr"]) * float(item["premium"])))
-        else:
-            raise ValueError(f"ie_inputs.json entry missing 'expected_ultimate' or 'elr'+'premium': {item}")
-    return pd.DataFrame(rows)
+def load_elrs(path, sheet_name):
+    """Load the ELR file and return a DataFrame with period, elr, expected_frequency."""
+    df = pd.read_excel(path, sheet_name=sheet_name, engine="openpyxl")
+    df.columns = df.columns.str.strip()
+
+    # Standardise column names
+    col_map = {}
+    for col in df.columns:
+        cl = col.lower().replace("_", " ")
+        if "accident" in cl and "period" in cl:
+            col_map[col] = "period"
+        elif "loss" in cl and "rate" in cl:
+            col_map[col] = "elr"
+        elif "frequency" in cl or ("expected" in cl and "freq" in cl):
+            col_map[col] = "expected_frequency"
+
+    df = df.rename(columns=col_map)
+    df["period"] = df["period"].astype(str).str.strip()
+
+    # Try to convert period to int string for consistency
+    try:
+        df["period"] = df["period"].apply(lambda x: str(int(float(x))))
+    except (ValueError, TypeError):
+        pass
+
+    return df
+
+
+def compute_ie_inputs(elr_df, diag):
+    """Compute IE ultimate = ELR × Exposure for losses, Frequency × Exposure for counts."""
+    # Get latest exposure per period from the diagonal
+    exp = diag[diag["measure"] == "Exposure"].copy()
+    if exp.empty:
+        raise ValueError("No 'Exposure' measure found in the diagonal. "
+                         "Ensure the triangles file includes an Exposure sheet.")
+
+    exp["period"] = exp["period"].astype(str)
+    exp_lookup = exp.set_index("period")["value"].to_dict()
+
+    ie_rows = []
+    for _, row in elr_df.iterrows():
+        period = str(row["period"])
+        exposure = exp_lookup.get(period, np.nan)
+
+        if pd.isna(exposure):
+            print(f"  Warning: No exposure found for period {period}, skipping")
+            continue
+
+        # Loss IE = ELR × Exposure
+        if "elr" in row.index and pd.notna(row.get("elr")):
+            loss_ult = float(row["elr"]) * float(exposure)
+            ie_rows.append(dict(period=period, measure="Incurred Loss",
+                                expected_ultimate=loss_ult))
+            ie_rows.append(dict(period=period, measure="Paid Loss",
+                                expected_ultimate=loss_ult))
+
+        # Count IE = Expected Frequency × Exposure
+        if "expected_frequency" in row.index and pd.notna(row.get("expected_frequency")):
+            count_ult = float(row["expected_frequency"]) * float(exposure)
+            ie_rows.append(dict(period=period, measure="Reported Count",
+                                expected_ultimate=count_ult))
+            ie_rows.append(dict(period=period, measure="Closed Count",
+                                expected_ultimate=count_ult))
+
+    return pd.DataFrame(ie_rows)
 
 
 def build_ie_results(diag, cl_ults, ie_df):
@@ -99,7 +146,7 @@ def build_ie_results(diag, cl_ults, ie_df):
         ie_row = ie_df[(ie_df["period"] == period) & (ie_df["measure"] == measure)]
         ie_ult = float(ie_row["expected_ultimate"].iloc[0]) if not ie_row.empty else np.nan
 
-        # CL ultimates for the two sibling measures (Incurred+Paid or Reported+Closed)
+        # CL ultimates for sibling measures
         cl_inc = cl_wide.get("Incurred Loss", {}).get(period, np.nan)
         cl_paid= cl_wide.get("Paid Loss",     {}).get(period, np.nan)
         cl_rep = cl_wide.get("Reported Count",{}).get(period, np.nan)
@@ -135,53 +182,51 @@ def exposure_for_periods(diag):
     exp = diag[diag["measure"] == "Exposure"].copy()
     if exp.empty:
         return {}
+    exp["period"] = exp["period"].astype(str)
     exp["age_int"] = _try_int(exp["age"])
     latest = exp.sort_values("age_int").groupby("period").last()
     return latest["value"].to_dict()
 
 
-def write_ie_excel(results, exp_by_period, path):
-    """Write canonical initial-expected Excel: Loss sheet + Counts sheet."""
+def write_ie_excel(results, exp_by_period, elr_df, path):
+    """Write initial-expected Excel: Loss and Counts sheets with display columns only."""
+    elr_by_period = (
+        dict(zip(elr_df["period"].astype(str), elr_df["elr"]))
+        if "elr" in elr_df.columns
+        else {}
+    )
+    freq_by_period = (
+        dict(zip(elr_df["period"].astype(str), elr_df["expected_frequency"]))
+        if "expected_frequency" in elr_df.columns
+        else {}
+    )
+
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
-        # ── Loss sheet (Incurred Loss) ──────────────────────────────────────
+        # ── Loss sheet (one row per accident period; incurred IE ultimate) ───
         loss_measures = ["Incurred Loss", "Paid Loss"]
         loss = results[results["measure"].isin(loss_measures)].copy()
-
         inc = loss[loss["measure"] == "Incurred Loss"].set_index("period")
-        paid= loss[loss["measure"] == "Paid Loss"].set_index("period")
         if not inc.empty:
             out_loss = pd.DataFrame({
-                "Accident Period":    _try_int(inc.index.to_series()),
-                "Current Age":        _try_int(inc["current_age"]),
-                "Exposure":           [exp_by_period.get(p, np.nan) for p in inc.index],
-                "CL Ultimate Incurred": inc["cl_incurred"],
-                "CL Ultimate Paid":     inc["cl_paid"],
-                "CL Ultimate":          ((inc["cl_incurred"].fillna(0) + inc["cl_paid"].fillna(0)) / 2
-                                         ).where(inc["cl_incurred"].notna() | inc["cl_paid"].notna()),
-                "Selected Ultimate Loss": inc["ie_ultimate"],
-                "IBNR":               inc["ie_ibnr"],
-                "Unpaid":             inc["ie_unpaid"],
+                "Accident Period":     _try_int(inc.index.to_series()),
+                "Current Age":         _try_int(inc["current_age"]),
+                "Exposure":            [exp_by_period.get(str(p), np.nan) for p in inc.index],
+                "Selected Loss Rate":  [elr_by_period.get(str(p), np.nan) for p in inc.index],
+                "Selected Loss":       inc["ie_ultimate"],
             })
             out_loss.to_excel(writer, sheet_name="Loss", index=False)
 
-        # ── Counts sheet (Reported Count) ───────────────────────────────────
+        # ── Counts sheet (one row per period; reported-count IE ultimate) ────
         count_measures = ["Reported Count", "Closed Count"]
         counts = results[results["measure"].isin(count_measures)].copy()
-
         rep = counts[counts["measure"] == "Reported Count"].set_index("period")
-        cls = counts[counts["measure"] == "Closed Count"].set_index("period")
         if not rep.empty:
             out_counts = pd.DataFrame({
-                "Accident Period":      _try_int(rep.index.to_series()),
-                "Current Age":          _try_int(rep["current_age"]),
-                "Exposure":             [exp_by_period.get(p, np.nan) for p in rep.index],
-                "CL Ultimate Reported": rep["cl_reported"],
-                "CL Ultimate Closed":   rep["cl_closed"],
-                "CL Ultimate":          ((rep["cl_reported"].fillna(0) + rep["cl_closed"].fillna(0)) / 2
-                                         ).where(rep["cl_reported"].notna() | rep["cl_closed"].notna()),
-                "Selected Counts":      rep["ie_ultimate"],
-                "IBNR":                 rep["ie_ibnr"],
-                "Unpaid":               rep["ie_unpaid"],
+                "Accident Period":       _try_int(rep.index.to_series()),
+                "Current Age":           _try_int(rep["current_age"]),
+                "Exposure":              [exp_by_period.get(str(p), np.nan) for p in rep.index],
+                "Selected Frequency":    [freq_by_period.get(str(p), np.nan) for p in rep.index],
+                "Selected Counts":       rep["ie_ultimate"],
             })
             out_counts.to_excel(writer, sheet_name="Counts", index=False)
 
@@ -201,8 +246,17 @@ def main():
     cl_ults["period"]  = cl_ults["period"].astype(str)
     cl_ults["measure"] = cl_ults["measure"].astype(str)
 
-    ie_df = load_ie_inputs(IE_INPUTS_JSON)
-    print(f"Loaded {len(ie_df)} IE input entries")
+    # Load ELRs and compute IE inputs from ELR × Exposure
+    elr_df = load_elrs(ELR_FILE, ELR_SHEET)
+    print(f"Loaded ELRs for {len(elr_df)} periods")
+
+    ie_df = compute_ie_inputs(elr_df, diag)
+    print(f"Computed {len(ie_df)} IE input entries")
+
+    # Save IE inputs as JSON for reference
+    ie_json = ie_df.to_dict("records")
+    with open(f"{OUTPUT_INPUTS}/ie_inputs.json", "w") as f:
+        json.dump(ie_json, f, indent=2)
 
     exp_by_period = exposure_for_periods(diag)
     results       = build_ie_results(diag, cl_ults, ie_df)
@@ -212,8 +266,7 @@ def main():
     ie_out.columns = ["period","measure","current_age","actual","expected_ultimate","ie_ibnr","ie_unpaid"]
     ie_out.to_csv(f"{OUTPUT_DIR}/ie_ultimates.csv", index=False)
 
-    write_ie_excel(results, exp_by_period, f"{OUTPUT_DIR}/initial-expected.xlsx")
-    shutil.copy2(IE_INPUTS_JSON, f"{OUTPUT_INPUTS}/ie_inputs.json")
+    write_ie_excel(results, exp_by_period, elr_df, f"{OUTPUT_DIR}/initial-expected.xlsx")
 
     print("\nIE summary by measure:")
     pd.set_option("display.float_format", lambda x: f"{x:,.2f}")
@@ -229,5 +282,5 @@ def main():
 
 
 if __name__ == "__main__":
-    print("=== Step 5: Applying Initial Expected method ===")
+    print("=== Step 5: Applying Initial Expected method (ELR × Exposure) ===")
     main()
